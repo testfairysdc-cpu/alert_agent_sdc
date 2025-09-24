@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from google.cloud import bigquery
 
 from data_agent.config import BQ_PROJECT, BQ_LOCATION, BQ_DATASET, ALLOW_CROSS_DATASET
+from data_agent.utils.log import log_step
 
 
 def _ensure_select(sql: str) -> None:
@@ -41,6 +42,7 @@ def run_query(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     _ensure_select(sql)
+    log_step("Validating dataset scope and query safety…")
     _enforce_dataset(sql)
 
     client = bigquery.Client(project=project_id or BQ_PROJECT)
@@ -65,14 +67,17 @@ def run_query(
         job_config.query_parameters = qp
 
     try:
+        log_step("Submitting BigQuery job…")
         job = client.query(sql, job_config=job_config, location=location or BQ_LOCATION)
         if dry_run:
+            log_step("Dry run completed.")
             return {
                 "status": "success",
                 "dry_run": True,
                 "total_bytes_processed": job.total_bytes_processed,
                 "sql": sql,
             }
+        log_step("Waiting for query results…")
         result = job.result()
         field_names = [f.name for f in result.schema]
         rows: List[Dict[str, Any]] = [
@@ -84,6 +89,7 @@ def run_query(
             {"name": f.name, "type": f.field_type, "mode": getattr(f, "mode", None)}
             for f in result.schema
         ]
+        log_step("Query succeeded.")
         return {
             "status": "success",
             "rows": rows,
@@ -93,6 +99,7 @@ def run_query(
             "sql": sql,
         }
     except Exception as exc:  # noqa: BLE001
+        log_step(f"Query failed: {exc}")
         return {"status": "error", "error_message": str(exc), "sql": sql}
 
 
@@ -169,6 +176,7 @@ def table_row_counts() -> Dict[str, Any]:
         f"SELECT table_name, row_count FROM `{BQ_PROJECT}.{BQ_DATASET}`.INFORMATION_SCHEMA.TABLE_STORAGE "
         "ORDER BY table_name"
     )
+    log_step("Row counts attempt #1: INFORMATION_SCHEMA.TABLE_STORAGE …")
     res1 = run_query(sql1)
     attempts.append({"sql": sql1, "status": res1.get("status"), "error": res1.get("error_message")})
     if res1.get("status") == "success" and res1.get("rows"):
@@ -180,6 +188,7 @@ def table_row_counts() -> Dict[str, Any]:
         f"SELECT table_name, SUM(row_count) AS row_count FROM `{BQ_PROJECT}.{BQ_DATASET}`.INFORMATION_SCHEMA.PARTITIONS "
         "GROUP BY table_name ORDER BY table_name"
     )
+    log_step("Row counts attempt #2: INFORMATION_SCHEMA.PARTITIONS …")
     res2 = run_query(sql2)
     attempts.append({"sql": sql2, "status": res2.get("status"), "error": res2.get("error_message")})
     if res2.get("status") == "success" and res2.get("rows"):
@@ -187,6 +196,7 @@ def table_row_counts() -> Dict[str, Any]:
         return res2
 
     # Attempt 3: Iterate COUNT(*) for each table (may be slower/costly)
+    log_step("Row counts attempt #3: enumerate tables and COUNT(*) …")
     lt = list_tables()
     attempts.append({"step": "list_tables", "status": lt.get("status"), "error": lt.get("error_message")})
     if lt.get("status") != "success" or not lt.get("rows"):

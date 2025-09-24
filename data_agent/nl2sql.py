@@ -14,6 +14,7 @@ from data_agent.bq import (
     count_tables,
     table_row_counts,
 )
+from data_agent.utils.log import log_step
 
 
 def _generate_sql_with_model(question: str, schema_context: str) -> str:
@@ -101,6 +102,7 @@ def nl2sql_and_execute(question: str, *, maximum_rows: int = 100) -> Dict[str, A
         return res
 
     # Richer schema context: table -> columns with types (truncated to keep prompt small)
+    log_step("Building schema context …")
     try:
         toc = get_tables_and_columns()
         schema = "\n".join(
@@ -112,8 +114,10 @@ def nl2sql_and_execute(question: str, *, maximum_rows: int = 100) -> Dict[str, A
         schema = get_schema_summary()
         schema_preview = "\n".join(schema.splitlines()[:25])
 
+    log_step("Generating SQL from natural language …")
     generated = _generate_sql_with_model(question, schema)
     try:
+        log_step("Sanitizing and auto-qualifying SQL …")
         sanitized = _sanitize_sql(generated)
     except Exception as exc:  # noqa: BLE001
         return {
@@ -123,6 +127,7 @@ def nl2sql_and_execute(question: str, *, maximum_rows: int = 100) -> Dict[str, A
             "debug": {"intent": "nl2sql", "schema_preview": schema_preview},
         }
 
+    log_step("Dry running the query …")
     dry = run_query(sanitized, dry_run=True)
     if dry.get("status") != "success":
         return {
@@ -132,6 +137,7 @@ def nl2sql_and_execute(question: str, *, maximum_rows: int = 100) -> Dict[str, A
             "debug": {"intent": "nl2sql", "schema_preview": schema_preview},
         }
 
+    log_step("Executing the query …")
     exec_res = run_query(sanitized, maximum_rows=maximum_rows)
     exec_res.setdefault("debug", {})
     exec_res["debug"].update(
@@ -143,6 +149,7 @@ def nl2sql_and_execute(question: str, *, maximum_rows: int = 100) -> Dict[str, A
             "dry_run_bytes": dry.get("total_bytes_processed"),
         }
     )
+    log_step("Done.")
     return exec_res
 
 
